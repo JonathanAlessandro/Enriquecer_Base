@@ -1,0 +1,1 @@
+"""Repositórios de integração externa."""
