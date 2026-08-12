@@ -1,9 +1,10 @@
+import time
 import urllib.parse
 from typing import Dict, List, Set
 
-from requests.exceptions import RequestException
+from requests.exceptions import RequestException, Timeout
 
-from app.config import SESSION
+from app.config import REQUEST_TIMEOUT, SESSION, logger
 from app.utils.text import limpar_cnpj
 
 
@@ -14,12 +15,19 @@ def consultar_cnpj_brasilapi(cnpj: str) -> Dict:
 
     url = f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_limpo}"
     try:
-        response = SESSION.get(url, timeout=12)
+        logger.info("Request started: BrasilAPI %s", url)
+        response = SESSION.get(url, timeout=REQUEST_TIMEOUT)
         if response.status_code == 200:
             return response.json()
-        print(f"[-] BrasilAPI retornou {response.status_code} para {cnpj_limpo}")
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After")
+            logger.warning("BrasilAPI retornou 429 para %s; retry-after=%s", cnpj_limpo, retry_after)
+            return {}
+        logger.warning("BrasilAPI retornou %s para %s", response.status_code, cnpj_limpo)
+    except Timeout as exc:
+        logger.warning("Timeout BrasilAPI para %s: %s", cnpj_limpo, exc)
     except RequestException as exc:
-        print(f"[-] Erro BrasilAPI para {cnpj_limpo}: {exc}")
+        logger.error("Erro BrasilAPI para %s: %s", cnpj_limpo, exc)
     return {}
 
 
@@ -34,10 +42,24 @@ def buscar_dados_registro_br(cnpj: str) -> Dict:
     ]
     for url in urls:
         try:
-            response = SESSION.get(url, timeout=12)
+            logger.info("Request started: Registro.br %s", url)
+            response = SESSION.get(url, timeout=REQUEST_TIMEOUT)
             if response.status_code == 200:
                 return response.json()
-        except RequestException:
+            if response.status_code == 429:
+                retry_after = response.headers.get("Retry-After")
+                logger.warning("Registro.br retornou 429 para %s em %s; retry-after=%s", cnpj_limpo, url, retry_after)
+                continue
+            if response.status_code == 403:
+                logger.warning("Registro.br retornou 403 para %s em %s; pausando 1s antes da próxima tentativa", cnpj_limpo, url)
+                time.sleep(1)
+                continue
+            logger.warning("Registro.br retornou %s para %s em %s", response.status_code, cnpj_limpo, url)
+        except Timeout as exc:
+            logger.warning("Timeout Registro.br para %s em %s: %s", cnpj_limpo, url, exc)
+            continue
+        except RequestException as exc:
+            logger.debug("Erro de rede ao acessar %s: %s", url, exc)
             continue
     return {}
 

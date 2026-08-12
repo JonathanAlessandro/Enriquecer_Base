@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
+from app.config import logger
 from app.services.prospeccao_service import gerar_resultado_prospeccao
 from app.utils.text import limpar_cnpj
 
@@ -56,7 +57,9 @@ def processar_csv(
     limit: Optional[int] = None,
     workers: int = 3,
 ) -> None:
+    logger.info("Iniciando processar_csv input=%s output=%s workers=%s limit=%s", input_path, output_path, workers, limit)
     registros = carregar_cnpjs_csv(input_path)
+    logger.info("Arquivo CSV carregado com %s registros", len(registros))
     if limit is not None:
         registros = registros[:limit]
 
@@ -84,16 +87,16 @@ def processar_csv(
                     c_limpo = limpar_cnpj(c)
                     if c_limpo:
                         processed_cnpjs.add(c_limpo)
-            print(f"[i] Encontrados {len(processed_cnpjs)} CNPJs já processados no arquivo de saída.")
+            logger.info("Encontrados %s CNPJs já processados no arquivo de saída.", len(processed_cnpjs))
         except Exception as exc:
-            print(f"[-] Não foi possível ler arquivo de saída existente: {exc}")
+            logger.error("Não foi possível ler arquivo de saída existente: %s", exc)
 
     novos = [r for r in registros if limpar_cnpj(r.get("cnpj", "")) not in processed_cnpjs]
     if not novos:
-        print("[i] Nenhum novo CNPJ para processar. Saindo.")
+        logger.info("Nenhum novo CNPJ para processar. Saindo.")
         return
 
-    print(f"[i] {len(novos)} CNPJs novos para processar (workers={workers}).")
+    logger.info("%s CNPJs novos para processar (workers=%s).", len(novos), workers)
 
     mode = "a" if file_exists else "w"
     with output_path.open(mode, newline="", encoding="utf-8") as csvfile:
@@ -104,39 +107,80 @@ def processar_csv(
         if workers and workers > 1:
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
                 future_to_reg = {}
-                for reg in novos:
+                registros_iter = iter(novos)
+                total = len(novos)
+                submitted = 0
+                completed = 0
+
+                for _ in range(min(workers, total)):
+                    reg = next(registros_iter, None)
+                    if reg is None:
+                        break
                     cnpj = reg.get("cnpj", "")
-                    print(f"\n=== Processando CNPJ {cnpj} ===", flush=True)
-                    future_to_reg[executor.submit(
+                    logger.info("Enviando worker para CNPJ %s", cnpj)
+                    future = executor.submit(
                         gerar_resultado_prospeccao,
                         reg["cnpj"],
                         reg.get("email_base"),
                         reg.get("nome_fantasia"),
                         reg.get("razao_social"),
-                    )] = reg
+                    )
+                    future_to_reg[future] = reg
+                    submitted += 1
 
-                for fut in concurrent.futures.as_completed(future_to_reg):
-                    reg = future_to_reg[fut]
-                    try:
-                        resultado = fut.result()
-                    except Exception as e:
-                        resultado = {
-                            "cnpj": reg.get("cnpj", ""),
-                            "razao_social": reg.get("razao_social", ""),
-                            "nome_fantasia": reg.get("nome_fantasia", ""),
-                            "decisores_qsa": "",
-                            "dominios": "",
-                            "origem_dominios": "",
-                            "emails_base": reg.get("email_base", ""),
-                            "emails_encontrados": "",
-                            "email_prioritario": "",
-                            "obs": f"Erro: {e}",
-                        }
-                    writer.writerow({campo: resultado.get(campo, "") for campo in campos})
-                    csvfile.flush()
+                logger.info("Workers iniciados: %s/%s", submitted, total)
+                while future_to_reg:
+                    logger.info("Aguardando conclusão de %s workers ativos", len(future_to_reg))
+                    done, _ = concurrent.futures.wait(
+                        future_to_reg,
+                        return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+                    for fut in done:
+                        reg = future_to_reg.pop(fut)
+                        cnpj = reg.get("cnpj", "")
+                        try:
+                            resultado = fut.result()
+                            logger.info("Worker finalizado CNPJ %s", cnpj)
+                        except Exception as e:
+                            logger.error("Worker falhou para CNPJ %s: %s", cnpj, e)
+                            resultado = {
+                                "cnpj": cnpj,
+                                "razao_social": reg.get("razao_social", ""),
+                                "nome_fantasia": reg.get("nome_fantasia", ""),
+                                "decisores_qsa": "",
+                                "dominios": "",
+                                "origem_dominios": "",
+                                "emails_base": reg.get("email_base", ""),
+                                "emails_encontrados": "",
+                                "email_prioritario": "",
+                                "obs": f"Erro: {e}",
+                            }
+                        writer.writerow({campo: resultado.get(campo, "") for campo in campos})
+                        csvfile.flush()
+                        completed += 1
+                        pending = submitted - completed
+                        remaining = total - submitted
+                        logger.info("Concluídos: %s, em andamento: %s, restantes por submeter: %s", completed, pending, remaining)
+
+                        reg = next(registros_iter, None)
+                        if reg is not None:
+                            cnpj = reg.get("cnpj", "")
+                            logger.info("Enviando novo worker para CNPJ %s", cnpj)
+                            future = executor.submit(
+                                gerar_resultado_prospeccao,
+                                reg["cnpj"],
+                                reg.get("email_base"),
+                                reg.get("nome_fantasia"),
+                                reg.get("razao_social"),
+                            )
+                            future_to_reg[future] = reg
+                            submitted += 1
+                            logger.info("Workers iniciados: %s/%s", submitted, total)
+
+                logger.info("Todos os workers concluídos. Processados %s registros.", completed)
         else:
             for registro in novos:
-                print(f"\n=== Processando CNPJ {registro['cnpj']} ===")
+                logger.info("Processando CNPJ %s", registro["cnpj"])
                 try:
                     resultado = gerar_resultado_prospeccao(
                         registro["cnpj"],
@@ -145,6 +189,7 @@ def processar_csv(
                         razao_social=registro.get("razao_social"),
                     )
                 except Exception as e:
+                    logger.error("Erro no processamento sequencial do CNPJ %s: %s", registro["cnpj"], e)
                     resultado = {
                         "cnpj": registro.get("cnpj", ""),
                         "razao_social": registro.get("razao_social", ""),
@@ -162,4 +207,4 @@ def processar_csv(
                 csvfile.flush()
                 time.sleep(0.1)
 
-    print(f"\nResultados salvos em: {output_path}")
+    logger.info("processar_csv finalizado. Resultados salvos em: %s", output_path)

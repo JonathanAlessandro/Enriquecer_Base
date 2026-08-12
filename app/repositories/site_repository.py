@@ -2,9 +2,9 @@ import urllib.parse
 from typing import List, Optional, Set
 
 from bs4 import BeautifulSoup
-from requests.exceptions import RequestException
+from requests.exceptions import RequestException, Timeout
 
-from app.config import PATH_CANDIDATES, LINK_KEYWORDS, SESSION
+from app.config import LINK_KEYWORDS, PATH_CANDIDATES, REQUEST_TIMEOUT, SESSION, logger
 from app.utils.text import extract_emails_from_text, validar_email
 
 
@@ -15,11 +15,20 @@ def procurar_site(dominio: str) -> Optional[str]:
     for esquema in ["https://", "http://"]:
         url = esquema + dominio
         try:
-            response = SESSION.get(url, timeout=12, allow_redirects=True)
+            logger.info("Request started: procurar_site %s", url)
+            response = SESSION.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+            if response.status_code == 429:
+                retry_after = response.headers.get("Retry-After")
+                logger.warning("Site %s retornou 429; retry-after=%s", url, retry_after)
+                continue
             content_type = response.headers.get("content-type", "").lower()
             if response.status_code < 500 and ("text/html" in content_type or response.text.strip()):
                 return response.url
-        except RequestException:
+        except Timeout as exc:
+            logger.warning("Timeout ao procurar site %s: %s", url, exc)
+            continue
+        except RequestException as exc:
+            logger.debug("Erro ao procurar site %s: %s", url, exc)
             continue
     return None
 
@@ -67,8 +76,18 @@ def buscar_emails_site(dominio: str, limite_paginas: int = 8) -> Set[str]:
         visitadas.add(url)
 
         try:
-            response = SESSION.get(url, timeout=12, allow_redirects=True)
-        except RequestException:
+            logger.info("Request started: crawling %s", url)
+            response = SESSION.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+        except Timeout as exc:
+            logger.warning("Timeout ao acessar %s: %s", url, exc)
+            continue
+        except RequestException as exc:
+            logger.debug("Erro ao acessar %s: %s", url, exc)
+            continue
+
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After")
+            logger.warning("Crawling %s retornou 429; retry-after=%s", url, retry_after)
             continue
 
         if response.status_code >= 500:

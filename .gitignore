@@ -1,2 +1,4 @@
-_psycache_
-app/_psycache_
+__pycache__/
+*.pyc
+csv_input
+prospeccao_resultados.csv
