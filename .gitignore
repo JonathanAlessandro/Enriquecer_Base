@@ -1,4 +1,4 @@
-__pycache__/
-*.pyc
+_psycache_
+app/_psycache_
 csv_input/BASE_TOTAL_ESTABELECIMENTOS_RECEITA.csv
 prospeccao_resultados.csv
