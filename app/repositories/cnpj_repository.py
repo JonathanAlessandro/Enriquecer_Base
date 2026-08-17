@@ -1,11 +1,14 @@
-import time
+import threading
 import urllib.parse
 from typing import Dict, List, Set
 
 from requests.exceptions import RequestException, Timeout
 
-from app.config import REQUEST_TIMEOUT, SESSION, logger
+from app.config import ENABLE_RDAP, REQUEST_TIMEOUT, get_session, logger
 from app.utils.text import limpar_cnpj
+
+
+_RDAP_BLOCKED = threading.Event()
 
 
 def consultar_cnpj_brasilapi(cnpj: str) -> Dict:
@@ -16,7 +19,7 @@ def consultar_cnpj_brasilapi(cnpj: str) -> Dict:
     url = f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_limpo}"
     try:
         logger.info("Request started: BrasilAPI %s", url)
-        response = SESSION.get(url, timeout=REQUEST_TIMEOUT)
+        response = get_session().get(url, timeout=REQUEST_TIMEOUT)
         if response.status_code == 200:
             return response.json()
         if response.status_code == 429:
@@ -32,35 +35,37 @@ def consultar_cnpj_brasilapi(cnpj: str) -> Dict:
 
 
 def buscar_dados_registro_br(cnpj: str) -> Dict:
+    if not ENABLE_RDAP or _RDAP_BLOCKED.is_set():
+        return {}
+
     cnpj_limpo = limpar_cnpj(cnpj)
     if not cnpj_limpo:
         return {}
 
-    urls = [
-        f"https://rdap.registro.br/entity/{cnpj_limpo}",
-        f"https://rdap.registro.br/domain/{cnpj_limpo}",
-    ]
-    for url in urls:
-        try:
-            logger.info("Request started: Registro.br %s", url)
-            response = SESSION.get(url, timeout=REQUEST_TIMEOUT)
-            if response.status_code == 200:
-                return response.json()
-            if response.status_code == 429:
-                retry_after = response.headers.get("Retry-After")
-                logger.warning("Registro.br retornou 429 para %s em %s; retry-after=%s", cnpj_limpo, url, retry_after)
-                continue
-            if response.status_code == 403:
-                logger.warning("Registro.br retornou 403 para %s em %s; pausando 1s antes da próxima tentativa", cnpj_limpo, url)
-                time.sleep(1)
-                continue
-            logger.warning("Registro.br retornou %s para %s em %s", response.status_code, cnpj_limpo, url)
-        except Timeout as exc:
-            logger.warning("Timeout Registro.br para %s em %s: %s", cnpj_limpo, url, exc)
-            continue
-        except RequestException as exc:
-            logger.debug("Erro de rede ao acessar %s: %s", url, exc)
-            continue
+    # CNPJ é consultado como entidade. Não consultar /domain/{CNPJ}:
+    # essa rota exige um nome de domínio, como empresa.com.br.
+    url = f"https://rdap.registro.br/entity/{cnpj_limpo}"
+    try:
+        logger.info("Request started: Registro.br %s", url)
+        response = get_session().get(url, timeout=REQUEST_TIMEOUT)
+        if response.status_code == 200:
+            return response.json()
+
+        retry_after = response.headers.get("Retry-After")
+        logger.warning(
+            "Registro.br retornou %s para %s em %s; retry-after=%s",
+            response.status_code,
+            cnpj_limpo,
+            url,
+            retry_after,
+        )
+        if response.status_code in {403, 429}:
+            _RDAP_BLOCKED.set()
+            logger.error("Consultas RDAP interrompidas nesta execução após status %s", response.status_code)
+    except Timeout as exc:
+        logger.warning("Timeout Registro.br para %s em %s: %s", cnpj_limpo, url, exc)
+    except RequestException as exc:
+        logger.debug("Erro de rede ao acessar %s: %s", url, exc)
     return {}
 
 
@@ -71,9 +76,8 @@ def _collect_urls(obj, urls: Set[str]) -> None:
     elif isinstance(obj, list):
         for item in obj:
             _collect_urls(item, urls)
-    elif isinstance(obj, str):
-        if obj.startswith("http://") or obj.startswith("https://"):
-            urls.add(obj)
+    elif isinstance(obj, str) and (obj.startswith("http://") or obj.startswith("https://")):
+        urls.add(obj)
 
 
 def extrair_dominios_de_rdap(data: Dict) -> List[str]:

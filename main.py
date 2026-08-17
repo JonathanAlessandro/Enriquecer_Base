@@ -3,6 +3,9 @@ from pathlib import Path
 
 from app.controllers.csv_controller import processar_csv
 from app.services.prospeccao_service import gerar_resultado_prospeccao
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 def main() -> None:
