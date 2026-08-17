@@ -3,3 +3,13 @@ app/_psycache_
 csv_input/BASE_TOTAL_ESTABELECIMENTOS_RECEITA.csv
 prospeccao_resultados.csv
 .env
+__pycache__/
+*.py[cod]
+.env
+*.bak
+*.bak_*
+
+csv_input/*.csv
+prospeccao_resultados.csv
+emails_validados.csv
+email_suppressions.csv
