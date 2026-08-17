@@ -4,7 +4,7 @@ from typing import Dict, List, Set
 
 from requests.exceptions import RequestException, Timeout
 
-from app.config import ENABLE_RDAP, REQUEST_TIMEOUT, get_session, logger
+from app.config import ENABLE_RDAP, HTTP_TIMEOUT, get_session, logger
 from app.utils.text import limpar_cnpj
 
 
@@ -19,7 +19,7 @@ def consultar_cnpj_brasilapi(cnpj: str) -> Dict:
     url = f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_limpo}"
     try:
         logger.info("Request started: BrasilAPI %s", url)
-        response = get_session().get(url, timeout=REQUEST_TIMEOUT)
+        response = get_session().get(url, timeout=HTTP_TIMEOUT)
         if response.status_code == 200:
             return response.json()
         if response.status_code == 429:
@@ -31,6 +31,8 @@ def consultar_cnpj_brasilapi(cnpj: str) -> Dict:
         logger.warning("Timeout BrasilAPI para %s: %s", cnpj_limpo, exc)
     except RequestException as exc:
         logger.error("Erro BrasilAPI para %s: %s", cnpj_limpo, exc)
+    finally:
+        logger.info("Request finished: BrasilAPI %s", url)
     return {}
 
 
@@ -47,7 +49,7 @@ def buscar_dados_registro_br(cnpj: str) -> Dict:
     url = f"https://rdap.registro.br/entity/{cnpj_limpo}"
     try:
         logger.info("Request started: Registro.br %s", url)
-        response = get_session().get(url, timeout=REQUEST_TIMEOUT)
+        response = get_session().get(url, timeout=HTTP_TIMEOUT)
         if response.status_code == 200:
             return response.json()
 
@@ -65,7 +67,9 @@ def buscar_dados_registro_br(cnpj: str) -> Dict:
     except Timeout as exc:
         logger.warning("Timeout Registro.br para %s em %s: %s", cnpj_limpo, url, exc)
     except RequestException as exc:
-        logger.debug("Erro de rede ao acessar %s: %s", url, exc)
+        logger.warning("Erro de rede ao acessar %s: %s", url, exc)
+    finally:
+        logger.info("Request finished: Registro.br %s", url)
     return {}
 
 

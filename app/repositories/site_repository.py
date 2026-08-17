@@ -4,7 +4,7 @@ from typing import List, Optional, Set
 from bs4 import BeautifulSoup
 from requests.exceptions import RequestException, Timeout
 
-from app.config import LINK_KEYWORDS, PATH_CANDIDATES, REQUEST_TIMEOUT, get_session, logger
+from app.config import HTTP_TIMEOUT, LINK_KEYWORDS, PATH_CANDIDATES, get_session, logger
 from app.utils.text import dominio_valido, extract_emails_from_text, is_generic_domain, validar_email
 
 
@@ -22,7 +22,7 @@ def procurar_site(dominio: str) -> Optional[str]:
         url = esquema + dominio_normalizado
         try:
             logger.info("Request started: procurar_site %s", url)
-            response = session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+            response = session.get(url, timeout=HTTP_TIMEOUT, allow_redirects=True)
             if response.status_code == 429:
                 retry_after = response.headers.get("Retry-After")
                 logger.warning("Site %s retornou 429; retry-after=%s", url, retry_after)
@@ -38,9 +38,11 @@ def procurar_site(dominio: str) -> Optional[str]:
             if response.status_code < 500 and ("text/html" in content_type or response.text.strip()):
                 return response.url
         except Timeout as exc:
-            logger.warning("Timeout ao procurar site %s: %s", url, exc)
+            logger.warning("Timeout ao procurar site %s após %ss: %s", url, HTTP_TIMEOUT, exc)
         except RequestException as exc:
-            logger.debug("Erro ao procurar site %s: %s", url, exc)
+            logger.warning("Erro ao procurar site %s: %s", url, exc)
+        finally:
+            logger.info("Request finished: procurar_site %s", url)
     return None
 
 
@@ -92,13 +94,15 @@ def buscar_emails_site(dominio: str, limite_paginas: int = 8) -> Set[str]:
 
         try:
             logger.info("Request started: crawling %s", url)
-            response = session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+            response = session.get(url, timeout=HTTP_TIMEOUT, allow_redirects=True)
         except Timeout as exc:
-            logger.warning("Timeout ao acessar %s: %s", url, exc)
+            logger.warning("Timeout ao acessar %s após %ss: %s", url, HTTP_TIMEOUT, exc)
             continue
         except RequestException as exc:
-            logger.debug("Erro ao acessar %s: %s", url, exc)
+            logger.warning("Erro ao acessar %s: %s", url, exc)
             continue
+        finally:
+            logger.info("Request finished: crawling %s", url)
 
         if response.status_code in {403, 429}:
             logger.warning("Crawling %s retornou %s; ignorando página", url, response.status_code)

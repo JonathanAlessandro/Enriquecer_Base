@@ -5,13 +5,17 @@ import threading
 
 import requests
 from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 USER_AGENT = os.getenv(
     "ENRIQUECER_USER_AGENT",
     "Enriquecer_Base/1.1 (+https://github.com/JonathanAlessandro/Enriquecer_Base)",
 )
-REQUEST_TIMEOUT = 30
+REQUEST_TIMEOUT = 30  # compatibilidade com integrações externas
+HTTP_CONNECT_TIMEOUT = int(os.getenv("ENRIQUECER_CONNECT_TIMEOUT", "5"))
+HTTP_READ_TIMEOUT = int(os.getenv("ENRIQUECER_READ_TIMEOUT", "15"))
+HTTP_TIMEOUT = (HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT)
 ENABLE_RDAP = os.getenv("ENRIQUECER_ENABLE_RDAP", "0").strip().lower() in {"1", "true", "yes"}
 
 _SESSION_LOCAL = threading.local()
@@ -25,7 +29,10 @@ def get_session() -> requests.Session:
             "User-Agent": USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
         })
-        adapter = HTTPAdapter(max_retries=3)
+        # Não repetir leitura automaticamente: retries podem multiplicar o tempo
+        # de espera e esconder qual URL está prendendo o worker.
+        retry = Retry(total=0, connect=0, read=0, redirect=0, status=0)
+        adapter = HTTPAdapter(max_retries=retry)
         session.mount("https://", adapter)
         session.mount("http://", adapter)
         _SESSION_LOCAL.session = session
