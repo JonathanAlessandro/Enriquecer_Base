@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import re
+import shutil
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -150,6 +153,69 @@ def collect_candidates(path: Path) -> List[EmailCandidate]:
     return list(candidates.values())
 
 
+def _writing_marker(path: Path) -> Path:
+    return path.with_name(path.name + ".writing")
+
+
+def _file_signature(path: Path) -> Tuple[int, int]:
+    stat = path.stat()
+    return stat.st_size, stat.st_mtime_ns
+
+
+def wait_for_stable_input(
+    path: Path,
+    wait_timeout: float = 3600.0,
+    stable_seconds: float = 3.0,
+    poll_seconds: float = 1.0,
+) -> None:
+    """Aguarda o produtor terminar e o CSV permanecer estável."""
+    deadline = time.monotonic() + max(0.0, wait_timeout)
+    last_signature: Optional[Tuple[int, int]] = None
+    stable_since: Optional[float] = None
+    marker = _writing_marker(path)
+
+    while True:
+        if path.exists() and path.stat().st_size > 0:
+            signature = _file_signature(path)
+            marker_exists = marker.exists()
+            if not marker_exists and signature == last_signature:
+                if stable_since is None:
+                    stable_since = time.monotonic()
+                if time.monotonic() - stable_since >= stable_seconds:
+                    return
+            else:
+                stable_since = None
+            last_signature = signature
+
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"Arquivo não ficou disponível/estável em {wait_timeout}s: {path}"
+            )
+        time.sleep(max(0.1, poll_seconds))
+
+
+def create_consistent_snapshot(
+    path: Path,
+    wait_timeout: float = 3600.0,
+    stable_seconds: float = 3.0,
+    poll_seconds: float = 1.0,
+) -> Path:
+    """Cria uma cópia estável para o validador não ler o CSV em mutação."""
+    deadline = time.monotonic() + max(0.0, wait_timeout)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"Não foi possível criar snapshot estável em {path}")
+        wait_for_stable_input(path, remaining, stable_seconds, poll_seconds)
+        snapshot = path.with_name(f".{path.name}.{os.getpid()}.validator.snapshot")
+        before = _file_signature(path)
+        shutil.copyfile(path, snapshot)
+        after = _file_signature(path)
+        if not _writing_marker(path).exists() and before == after:
+            return snapshot
+        snapshot.unlink(missing_ok=True)
+
+
 def check_mx(domain: str, timeout: float = 3.0) -> Tuple[Optional[bool], str]:
     if dns is None:
         return None, "dns_library_unavailable"
@@ -234,28 +300,44 @@ def row(candidate: EmailCandidate, status: str, recommendation: str, risk: str, 
     }
 
 
-def validate_file(input_path: Path, output_path: Path, suppressions_path: Optional[Path], disposable_path: Optional[Path], workers: int) -> int:
-    candidates = collect_candidates(input_path)
-    suppression_emails, suppression_domains = load_suppressions(suppressions_path)
-    disposable_domains = load_domain_file(disposable_path, DEFAULT_DISPOSABLE_DOMAINS)
-    domains = sorted({candidate.email.rsplit("@", 1)[1] for candidate in candidates if is_syntactically_valid(candidate.email)})
+def validate_file(
+    input_path: Path,
+    output_path: Path,
+    suppressions_path: Optional[Path],
+    disposable_path: Optional[Path],
+    workers: int,
+    wait_timeout: float = 3600.0,
+    stable_seconds: float = 3.0,
+    poll_seconds: float = 1.0,
+) -> int:
+    snapshot = create_consistent_snapshot(input_path, wait_timeout, stable_seconds, poll_seconds)
+    try:
+        candidates = collect_candidates(snapshot)
+        suppression_emails, suppression_domains = load_suppressions(suppressions_path)
+        disposable_domains = load_domain_file(disposable_path, DEFAULT_DISPOSABLE_DOMAINS)
+        domains = sorted({candidate.email.rsplit("@", 1)[1] for candidate in candidates if is_syntactically_valid(candidate.email)})
 
-    domain_cache: Dict[str, Tuple[Optional[bool], str]] = {}
-    max_workers = max(1, min(int(workers or 1), 16))
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(check_mx, domain): domain for domain in domains}
-        for future in as_completed(futures):
-            domain_cache[futures[future]] = future.result()
+        domain_cache: Dict[str, Tuple[Optional[bool], str]] = {}
+        max_workers = max(1, min(int(workers or 1), 16))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(check_mx, domain): domain for domain in domains}
+            for future in as_completed(futures):
+                domain_cache[futures[future]] = future.result()
 
-    rows = [classify_candidate(candidate, domain_cache, suppression_emails, suppression_domains, disposable_domains) for candidate in candidates]
-    with output_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=OUTPUT_FIELDS)
-        writer.writeheader()
-        writer.writerows(rows)
-    print(f"E-mails únicos analisados: {len(candidates)}")
-    print(f"Domínios consultados via MX: {len(domains)}")
-    print(f"Resultado salvo em: {output_path}")
-    return len(rows)
+        rows = [classify_candidate(candidate, domain_cache, suppression_emails, suppression_domains, disposable_domains) for candidate in candidates]
+        temporary_output = output_path.with_suffix(output_path.suffix + ".tmp")
+        with temporary_output.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=OUTPUT_FIELDS)
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(temporary_output, output_path)
+        print(f"E-mails únicos analisados: {len(candidates)}")
+        print(f"Domínios consultados via MX: {len(domains)}")
+        print(f"Snapshot validado: {snapshot}")
+        print(f"Resultado salvo em: {output_path}")
+        return len(rows)
+    finally:
+        snapshot.unlink(missing_ok=True)
 
 
 def main() -> None:
@@ -265,8 +347,20 @@ def main() -> None:
     parser.add_argument("--suppressions", default="email_suppressions.csv", type=Path, help="CSV opcional com colunas email,domain,reason")
     parser.add_argument("--disposable-domains", default="disposable_domains.txt", type=Path, help="TXT opcional: um domínio descartável por linha")
     parser.add_argument("--workers", default=4, type=int, help="Threads somente para consultas DNS")
+    parser.add_argument("--wait-timeout", default=3600.0, type=float, help="Máximo de segundos aguardando o CSV ficar estável")
+    parser.add_argument("--stable-seconds", default=3.0, type=float, help="Segundos sem alteração antes de criar o snapshot")
+    parser.add_argument("--poll-seconds", default=1.0, type=float, help="Intervalo de verificação do arquivo")
     args = parser.parse_args()
-    validate_file(args.input_csv, args.output_csv, args.suppressions, args.disposable_domains, args.workers)
+    validate_file(
+        args.input_csv,
+        args.output_csv,
+        args.suppressions,
+        args.disposable_domains,
+        args.workers,
+        args.wait_timeout,
+        args.stable_seconds,
+        args.poll_seconds,
+    )
 
 
 if __name__ == "__main__":

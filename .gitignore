@@ -8,8 +8,11 @@ __pycache__/
 .env
 *.bak
 *.bak_*
-
 csv_input/*.csv
 prospeccao_resultados.csv
 emails_validados.csv
 email_suppressions.csv
+emails_corporativos_revisao.csv
+*.writing
+*.tmp
+.*.validator.snapshot

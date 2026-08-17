@@ -136,63 +136,68 @@ def processar_csv(
     limit: Optional[int] = None,
     workers: int = 3,
 ) -> None:
-    logger.info("Iniciando processar_csv input=%s output=%s workers=%s limit=%s", input_path, output_path, workers, limit)
-    file_exists = _migrar_cabecalho_saida(output_path)
-    processados = _ler_processados(output_path)
-    logger.info("Encontrados %s CNPJs já processados no arquivo de saída.", len(processados))
+    writing_marker = output_path.with_name(output_path.name + ".writing")
+    writing_marker.write_text(f"pid={os.getpid()}\\n", encoding="utf-8")
+    try:
+        logger.info("Iniciando processar_csv input=%s output=%s workers=%s limit=%s", input_path, output_path, workers, limit)
+        file_exists = _migrar_cabecalho_saida(output_path)
+        processados = _ler_processados(output_path)
+        logger.info("Encontrados %s CNPJs já processados no arquivo de saída.", len(processados))
 
-    novos, linhas_lidas = _selecionar_novos(input_path, processados, limit)
-    logger.info("Linhas elegíveis lidas até selecionar os novos: %s", linhas_lidas)
-    if not novos:
-        logger.info("Nenhum novo CNPJ para processar. Saindo.")
-        return
+        novos, linhas_lidas = _selecionar_novos(input_path, processados, limit)
+        logger.info("Linhas elegíveis lidas até selecionar os novos: %s", linhas_lidas)
+        if not novos:
+            logger.info("Nenhum novo CNPJ para processar. Saindo.")
+            return
 
-    logger.info("%s CNPJs novos selecionados (workers=%s).", len(novos), workers)
-    mode = "a" if file_exists else "w"
-    with output_path.open(mode, newline="", encoding="utf-8") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=CAMPOS_RESULTADO)
-        if not file_exists:
-            writer.writeheader()
+        logger.info("%s CNPJs novos selecionados (workers=%s).", len(novos), workers)
+        mode = "a" if file_exists else "w"
+        with output_path.open(mode, newline="", encoding="utf-8") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=CAMPOS_RESULTADO)
+            if not file_exists:
+                writer.writeheader()
 
-        if workers and workers > 1:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-                tarefas = [
-                    (
-                        executor.submit(
-                            gerar_resultado_prospeccao,
-                            registro["cnpj"],
-                            registro.get("email_base"),
-                            registro.get("nome_fantasia"),
-                            registro.get("razao_social"),
-                        ),
-                        registro,
-                    )
-                    for registro in novos
-                ]
-                # Os workers executam em paralelo, mas a gravação permanece na
-                # ordem do CSV de entrada para facilitar retomada e auditoria.
-                for fut, registro in tarefas:
+            if workers and workers > 1:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                    tarefas = [
+                        (
+                            executor.submit(
+                                gerar_resultado_prospeccao,
+                                registro["cnpj"],
+                                registro.get("email_base"),
+                                registro.get("nome_fantasia"),
+                                registro.get("razao_social"),
+                            ),
+                            registro,
+                        )
+                        for registro in novos
+                    ]
+                    # Os workers executam em paralelo, mas a gravação permanece na
+                    # ordem do CSV de entrada para facilitar retomada e auditoria.
+                    for fut, registro in tarefas:
+                        try:
+                            resultado = fut.result()
+                        except Exception as exc:
+                            logger.exception("Worker falhou para CNPJ %s", registro.get("cnpj", ""))
+                            resultado = _resultado_de_erro(registro, exc)
+                        writer.writerow({campo: resultado.get(campo, "") for campo in CAMPOS_RESULTADO})
+                        csvfile.flush()
+            else:
+                for registro in novos:
                     try:
-                        resultado = fut.result()
+                        resultado = gerar_resultado_prospeccao(
+                            registro["cnpj"],
+                            email_base=registro.get("email_base"),
+                            nome_fantasia=registro.get("nome_fantasia"),
+                            razao_social=registro.get("razao_social"),
+                        )
                     except Exception as exc:
-                        logger.exception("Worker falhou para CNPJ %s", registro.get("cnpj", ""))
+                        logger.exception("Erro no processamento do CNPJ %s", registro.get("cnpj", ""))
                         resultado = _resultado_de_erro(registro, exc)
                     writer.writerow({campo: resultado.get(campo, "") for campo in CAMPOS_RESULTADO})
                     csvfile.flush()
-        else:
-            for registro in novos:
-                try:
-                    resultado = gerar_resultado_prospeccao(
-                        registro["cnpj"],
-                        email_base=registro.get("email_base"),
-                        nome_fantasia=registro.get("nome_fantasia"),
-                        razao_social=registro.get("razao_social"),
-                    )
-                except Exception as exc:
-                    logger.exception("Erro no processamento do CNPJ %s", registro.get("cnpj", ""))
-                    resultado = _resultado_de_erro(registro, exc)
-                writer.writerow({campo: resultado.get(campo, "") for campo in CAMPOS_RESULTADO})
-                csvfile.flush()
-                time.sleep(0.1)
+                    time.sleep(0.1)
 
-    logger.info("processar_csv finalizado. Resultados salvos em: %s", output_path)
+        logger.info("processar_csv finalizado. Resultados salvos em: %s", output_path)
+    finally:
+        writing_marker.unlink(missing_ok=True)

@@ -1,0 +1,8 @@
+# Adicione um domínio descartável por linha.
+10minutemail.com
+guerrillamail.com
+mailinator.com
+maildrop.cc
+tempmail.com
+temp-mail.org
+yopmail.com
