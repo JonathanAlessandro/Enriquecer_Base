@@ -1,4 +1,7 @@
+import json
+import re
 import urllib.parse
+from functools import lru_cache
 from typing import List, Optional, Set
 
 from bs4 import BeautifulSoup
@@ -35,7 +38,7 @@ def procurar_site(dominio: str) -> Optional[str]:
                 logger.info("Site %s redirecionou para domínio externo %s; ignorando", url, final_host)
                 continue
             content_type = response.headers.get("content-type", "").lower()
-            if response.status_code < 500 and ("text/html" in content_type or response.text.strip()):
+            if 200 <= response.status_code < 300 and ("text/html" in content_type or "application/xhtml+xml" in content_type):
                 return response.url
         except Timeout as exc:
             logger.warning("Timeout ao procurar site %s após %ss: %s", url, HTTP_TIMEOUT, exc)
@@ -51,10 +54,36 @@ def extract_mailto_links(soup: BeautifulSoup) -> Set[str]:
     for link in soup.select("a[href]"):
         href = link["href"].strip()
         if href.lower().startswith("mailto:"):
-            email = href.split("mailto:", 1)[1].split("?", 1)[0]
-            email_validado = validar_email(email)
-            if email_validado:
-                emails.add(email_validado)
+            destinatarios = urllib.parse.unquote(href.split(":", 1)[1].split("?", 1)[0])
+            for email in re.split(r"[,;]", destinatarios):
+                email_validado = validar_email(email)
+                if email_validado:
+                    emails.add(email_validado)
+    return emails
+
+
+def extrair_emails_pagina(soup: BeautifulSoup) -> Set[str]:
+    emails = extract_mailto_links(soup)
+    # Dados estruturados podem conter contatos que não aparecem no texto visível.
+    def coletar(obj):
+        if isinstance(obj, dict):
+            for chave, valor in obj.items():
+                if chave.lower() == "email" and isinstance(valor, str):
+                    emails.update(extract_emails_from_text(valor))
+                elif isinstance(valor, (dict, list)):
+                    coletar(valor)
+        elif isinstance(obj, list):
+            for item in obj:
+                coletar(item)
+
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+            coletar(json.loads(script.string or script.get_text()))
+        except (ValueError, TypeError):
+            continue
+    for elemento in soup.select("script, style, noscript"):
+        elemento.decompose()
+    emails.update(extract_emails_from_text(soup.get_text(" ")))
     return emails
 
 
@@ -67,24 +96,35 @@ def is_internal_link(url: str, site_domain: str) -> bool:
     return not hostname or hostname == site_domain or hostname.endswith("." + site_domain)
 
 
-def buscar_emails_site(dominio: str, limite_paginas: int = 8) -> Set[str]:
+def buscar_emails_site(dominio: str, limite_paginas: int = 8, site_confirmado: Optional[str] = None) -> Set[str]:
+    # Devolve uma cópia para impedir que um chamador altere o valor em cache.
+    return set(_buscar_emails_site_cached(dominio, limite_paginas, site_confirmado))
+
+
+@lru_cache(maxsize=50_000)
+def _buscar_emails_site_cached(
+    dominio: str, limite_paginas: int = 8, site_confirmado: Optional[str] = None
+) -> frozenset[str]:
     dominio_normalizado = dominio_valido(dominio)
     if not dominio_normalizado or is_generic_domain(dominio_normalizado):
-        return set()
+        return frozenset()
 
     resultados: Set[str] = set()
-    site = procurar_site(dominio_normalizado)
+    site = site_confirmado or procurar_site(dominio_normalizado)
     if not site:
-        return resultados
+        return frozenset()
 
     session = get_session()
     urls = [site] + [urllib.parse.urljoin(site, path) for path in PATH_CANDIDATES]
     visitadas: Set[str] = set()
     fila: List[str] = []
 
+    enfileiradas: Set[str] = set()
     for url in urls:
-        if url not in visitadas:
+        url = urllib.parse.urldefrag(url)[0]
+        if url not in enfileiradas:
             fila.append(url)
+            enfileiradas.add(url)
 
     while fila and len(visitadas) < limite_paginas:
         url = fila.pop(0)
@@ -107,7 +147,7 @@ def buscar_emails_site(dominio: str, limite_paginas: int = 8) -> Set[str]:
         if response.status_code in {403, 429}:
             logger.warning("Crawling %s retornou %s; ignorando página", url, response.status_code)
             continue
-        if response.status_code >= 500:
+        if not 200 <= response.status_code < 300:
             continue
         if not is_internal_link(response.url, dominio_normalizado):
             continue
@@ -117,20 +157,23 @@ def buscar_emails_site(dominio: str, limite_paginas: int = 8) -> Set[str]:
             continue
 
         soup = BeautifulSoup(response.text, "html.parser")
-        resultados.update(extract_mailto_links(soup))
-        resultados.update(extract_emails_from_text(soup.get_text(" ")))
+        resultados.update(extrair_emails_pagina(soup))
 
         if len(resultados) >= 10:
             break
 
+        descobertas = []
         for link in soup.select("a[href]"):
             href = link["href"].strip()
             if href.lower().startswith("mailto:"):
                 continue
-            full_url = urllib.parse.urljoin(response.url, href)
-            if full_url in visitadas or len(fila) >= limite_paginas:
+            full_url = urllib.parse.urldefrag(urllib.parse.urljoin(response.url, href))[0]
+            if full_url in visitadas or full_url in enfileiradas:
                 continue
-            if any(keyword in full_url.lower() for keyword in LINK_KEYWORDS) and is_internal_link(full_url, dominio_normalizado):
-                fila.append(full_url)
+            texto_link = (full_url + " " + link.get_text(" ")).lower()
+            if any(keyword in texto_link for keyword in LINK_KEYWORDS) and is_internal_link(full_url, dominio_normalizado):
+                descobertas.append(full_url)
+                enfileiradas.add(full_url)
+        fila = descobertas + [url for url in fila if url not in descobertas]
 
-    return resultados
+    return frozenset(resultados)

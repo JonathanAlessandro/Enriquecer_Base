@@ -7,6 +7,7 @@ from app.utils.text import (
     classificar_emails,
     dominio_de_email,
     extrair_dominios_de_email,
+    extract_emails_from_text,
     gerar_dominios_candidatos,
     is_generic_email,
     limpar_cnpj,
@@ -61,8 +62,12 @@ def gerar_resultado_prospeccao(
     nome_fantasia = nome_fantasia or dados_empresa.get("nome_fantasia") or razao_social
     qsa = dados_empresa.get("qsa", [])
     decisores = [socio.get("nome_socio") for socio in qsa if socio.get("nome_socio")]
+    emails_cadastrais = extract_emails_from_text(email_base or "")
+    emails_api = extract_emails_from_text(dados_empresa.get("email") or "")
+    emails_cadastrais.update(emails_api)
 
     dominios = []
+    sites_confirmados = {}
     origem_dominios = "fallback"
     dominio_fundamental = None
 
@@ -76,9 +81,9 @@ def gerar_resultado_prospeccao(
         logger.info("[%s] RDAP desativado para evitar consultas em massa", cnpj_limpo)
 
     # Só usa o domínio do e-mail como candidato quando ele é corporativo.
-    if not dominios and email_base_validado and not email_base_generico:
-        dominios = extrair_dominios_de_email(email_base_validado)
-        origem_dominios = "email_base"
+    if not dominios and any(not is_generic_email(e) for e in emails_cadastrais):
+        dominios = sorted({dominio_de_email(e) for e in emails_cadastrais if not is_generic_email(e)})
+        origem_dominios = "email_cadastral"
         dominio_fundamental = dominios[0] if dominios else None
         logger.info("[%s] Domínio corporativo derivado do e-mail-base: %s", cnpj_limpo, dominios)
 
@@ -87,8 +92,10 @@ def gerar_resultado_prospeccao(
         candidatos = gerar_dominios_candidatos(nome_fantasia or razao_social)
         for candidato in candidatos:
             logger.info("[%s] Tentando candidato de domínio %s", cnpj_limpo, candidato)
-            if procurar_site(candidato):
+            site_confirmado = procurar_site(candidato)
+            if site_confirmado:
                 dominios.append(candidato)
+                sites_confirmados[candidato] = site_confirmado
                 dominio_fundamental = candidato
                 origem_dominios = "nome_fantasia"
                 logger.info("[%s] Candidato de domínio acessível: %s", cnpj_limpo, candidato)
@@ -96,17 +103,22 @@ def gerar_resultado_prospeccao(
 
     emails_encontrados: Set[str] = set()
     origem_emails = "nenhuma"
-    if dominio_fundamental:
-        logger.info("[%s] Buscando e-mails no site candidato %s", cnpj_limpo, dominio_fundamental)
-        emails_encontrados.update(buscar_emails_site(dominio_fundamental))
+    for dominio in dominios:
+        logger.info("[%s] Buscando e-mails no site candidato %s", cnpj_limpo, dominio)
+        emails_encontrados.update(
+            buscar_emails_site(dominio, site_confirmado=sites_confirmados.get(dominio))
+        )
         if emails_encontrados:
             origem_emails = "site_oficial_candidato" if origem_dominios == "nome_fantasia" else "site_do_dominio_email"
 
     # Mantém o e-mail-base no resultado, mas o classifica separadamente.
-    if email_base_validado:
-        emails_encontrados.add(email_base_validado)
+    emails_do_site = set(emails_encontrados)
+    if emails_cadastrais:
+        emails_encontrados.update(emails_cadastrais)
         if origem_emails == "nenhuma":
-            origem_emails = "email_base"
+            origem_emails = "cadastro_brasilapi" if emails_api else "email_base"
+        elif emails_api:
+            origem_emails += "; cadastro_brasilapi"
 
     emails_corporativos = sorted(e for e in emails_encontrados if not is_generic_email(e))
     emails_genericos = sorted(e for e in emails_encontrados if is_generic_email(e))
@@ -115,13 +127,19 @@ def gerar_resultado_prospeccao(
     tipo_email_prioritario = "corporativo" if email_prioritario and not is_generic_email(email_prioritario) else ("generico" if email_prioritario else "")
 
     if tipo_email_prioritario == "corporativo":
-        confianca_email = "alta" if origem_emails.startswith("site_") else "media"
+        confianca_email = "media" if email_prioritario in emails_do_site or email_prioritario in emails_cadastrais else "baixa"
+        if origem_dominios == "nome_fantasia" and email_prioritario not in emails_cadastrais:
+            confianca_email = "baixa"
     elif tipo_email_prioritario == "generico":
         confianca_email = "baixa"
     else:
         confianca_email = ""
 
     observacoes = []
+    if origem_dominios == "nome_fantasia":
+        observacoes.append("Vínculo do site candidato com o CNPJ não confirmado")
+    if email_prioritario:
+        observacoes.append("Titularidade do e-mail e vínculo com sócios não confirmados")
     if not dados_empresa:
         observacoes.append("Dados BrasilAPI não encontrados")
     if not dominios:
