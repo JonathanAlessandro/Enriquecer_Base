@@ -165,6 +165,7 @@ def processar_csv(
     uf: str = "SP",
     progress_every: int = 100,
 ) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     writing_marker = output_path.with_name(output_path.name + ".writing")
     writing_marker.write_text(f"pid={os.getpid()}\n", encoding="utf-8")
     try:

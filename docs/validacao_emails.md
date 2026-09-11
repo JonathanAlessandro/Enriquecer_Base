@@ -16,10 +16,10 @@ python -m pip install -r requirements-email-validation.txt
 
 ```powershell
 python validar_emails.py `
-  --input-csv prospeccao_resultados.csv `
-  --output-csv emails_validados.csv `
-  --suppressions email_suppressions.csv `
-  --disposable-domains disposable_domains.txt `
+  --input-csv data/output/prospeccao/prospeccao_sp.csv `
+  --output-csv data/output/verificacao/emails_validados.csv `
+  --suppressions data/config/email_suppressions.csv `
+  --disposable-domains data/config/disposable_domains.txt `
   --workers 4
 ```
 
@@ -30,7 +30,7 @@ O script deduplica os endereços antes da consulta DNS. Os workers são usados a
 O validador pode ser iniciado enquanto o enriquecimento principal está rodando, desde que o `csv_controller.py` esteja atualizado com o marcador de escrita. O processo principal cria:
 
 ```text
-prospeccao_resultados.csv.writing
+data/output/prospeccao/prospeccao_sp.csv.writing
 ```
 
 Enquanto esse arquivo existir, o validador aguarda. Quando o marcador desaparece e o CSV fica sem alterações durante `--stable-seconds`, o validador copia o arquivo para um snapshot temporário e trabalha somente sobre essa cópia. Assim, ele não lê uma linha enquanto ela está sendo gravada e não disputa a escrita da planilha principal.
@@ -40,8 +40,8 @@ Comandos em dois terminais PowerShell:
 ```powershell
 # Terminal 1 — enriquecimento
 python main.py `
-  --input-csv csv_input\\BASE_TOTAL_ESTABELECIMENTOS_RECEITA.csv `
-  --output-csv prospeccao_resultados.csv `
+  --input-csv data/input/BASE_TOTAL_ESTABELECIMENTOS_RECEITA.csv `
+  --output-csv data/output/prospeccao/prospeccao_sp.csv `
   --workers 3 `
   --limit 30
 ```
@@ -49,10 +49,10 @@ python main.py `
 ```powershell
 # Terminal 2 — validação; aguarda até uma hora pelo CSV ficar estável
 python validar_emails.py `
-  --input-csv prospeccao_resultados.csv `
-  --output-csv emails_validados.csv `
-  --suppressions email_suppressions.csv `
-  --disposable-domains disposable_domains.txt `
+  --input-csv data/output/prospeccao/prospeccao_sp.csv `
+  --output-csv data/output/verificacao/emails_validados.csv `
+  --suppressions data/config/email_suppressions.csv `
+  --disposable-domains data/config/disposable_domains.txt `
   --workers 4 `
   --wait-timeout 3600 `
   --stable-seconds 3 `
@@ -63,7 +63,7 @@ O validador processa o snapshot disponível quando o enriquecimento termina. Ele
 
 ## Lista de supressão
 
-Edite `email_suppressions.csv` com endereços ou domínios que nunca devem ser usados:
+Edite `data/config/email_suppressions.csv` com endereços ou domínios que nunca devem ser usados:
 
 ```csv
 email,domain,reason

@@ -310,6 +310,7 @@ def validate_file(
     stable_seconds: float = 3.0,
     poll_seconds: float = 1.0,
 ) -> int:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     snapshot = create_consistent_snapshot(input_path, wait_timeout, stable_seconds, poll_seconds)
     try:
         candidates = collect_candidates(snapshot)
@@ -343,9 +344,9 @@ def validate_file(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validação passiva de e-mails sem envio de mensagens")
     parser.add_argument("--input-csv", required=True, type=Path, help="CSV com emails_base/emails_encontrados ou colunas de e-mail")
-    parser.add_argument("--output-csv", default="emails_validados.csv", type=Path)
-    parser.add_argument("--suppressions", default="email_suppressions.csv", type=Path, help="CSV opcional com colunas email,domain,reason")
-    parser.add_argument("--disposable-domains", default="disposable_domains.txt", type=Path, help="TXT opcional: um domínio descartável por linha")
+    parser.add_argument("--output-csv", default="data/output/verificacao/emails_validados.csv", type=Path)
+    parser.add_argument("--suppressions", default="data/config/email_suppressions.csv", type=Path, help="CSV opcional com colunas email,domain,reason")
+    parser.add_argument("--disposable-domains", default="data/config/disposable_domains.txt", type=Path, help="TXT opcional: um domínio descartável por linha")
     parser.add_argument("--workers", default=4, type=int, help="Threads somente para consultas DNS")
     parser.add_argument("--wait-timeout", default=3600.0, type=float, help="Máximo de segundos aguardando o CSV ficar estável")
     parser.add_argument("--stable-seconds", default=3.0, type=float, help="Segundos sem alteração antes de criar o snapshot")

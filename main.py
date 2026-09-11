@@ -13,7 +13,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Pipeline de prospecção de e-mails por CNPJ e domínio oficial.")
     parser.add_argument("--cnpj", help="CNPJ a ser processado isoladamente")
     parser.add_argument("--input-csv", help="Arquivo CSV de entrada com CNPJ_COMPLETO e EMAIL")
-    parser.add_argument("--output-csv", help="Arquivo CSV de saída (padrão: prospeccao_resultados_<uf>.csv)")
+    parser.add_argument("--output-csv", help="Arquivo CSV de saída (padrão: data/output/prospeccao/prospeccao_<uf>.csv)")
     parser.add_argument("--uf", default="SP", type=lambda valor: valor.strip().upper(),
                         choices="AC AL AP AM BA CE DF ES GO MA MT MS MG PA PB PR PE PI RJ RN RS RO RR SC SP SE TO".split(),
                         help="UF das empresas no CSV (padrão: SP, estado de São Paulo)")
@@ -23,7 +23,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.input_csv:
-        output_path = Path(args.output_csv or f"prospeccao_resultados_{args.uf.lower()}.csv")
+        output_path = Path(args.output_csv or f"data/output/prospeccao/prospeccao_{args.uf.lower()}.csv")
         processar_csv(
             Path(args.input_csv), output_path, limit=args.limit, workers=args.workers,
             uf=args.uf, progress_every=args.progress_every,

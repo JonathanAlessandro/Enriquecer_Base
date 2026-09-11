@@ -64,15 +64,20 @@ flowchart TD
 │   │   ├── cnpj_repository.py
 │   │   └── site_repository.py
 │   └── utils/text.py
-├── csv_input/                       # Bases locais de entrada
-├── tests/test_prospeccao.py          # Testes com integrações simuladas
+├── data/
+│   ├── input/                       # Bases de empresas
+│   ├── output/
+│   │   ├── prospeccao/              # Resultados do enriquecimento
+│   │   └── verificacao/             # Listas para validação e importação
+│   ├── config/                      # Supressões e domínios descartáveis
+│   └── archive/runtime/             # Resíduos antigos preservados
+├── docs/validacao_emails.md
+├── scripts/knock_registro_api.py
+├── tests/test_prospeccao.py         # Testes com integrações simuladas
 ├── validar_emails.py
 ├── requirements-email-validation.txt
-├── disposable_domains.txt
-├── email_suppressions.csv           # Lista local de supressão
-├── knock_registro_api.py            # Diagnóstico manual de acesso HTTP
-├── README.md
-└── README_validacao_emails.md
+├── requirements.txt
+└── README.md
 ```
 
 ## Fluxo de processamento
@@ -132,15 +137,15 @@ Cabeçalhos em minúsculas também são aceitos. Valores de UF aceitam espaços 
 ### Primeiro lote de São Paulo
 
 ```powershell
-.\.venv\Scripts\python.exe main.py --input-csv csv_input/BASE_TOTAL_ESTABELECIMENTOS_RECEITA.csv --limit 100 --workers 3
+.\.venv\Scripts\python.exe main.py --input-csv data/input/BASE_TOTAL_ESTABELECIMENTOS_RECEITA.csv --limit 100 --workers 3
 ```
 
-A saída padrão é `prospeccao_resultados_sp.csv`. O filtro cobre todo o **estado**, não apenas o município de São Paulo.
+A saída padrão é `data/output/prospeccao/prospeccao_sp.csv`. O filtro cobre todo o **estado**, não apenas o município de São Paulo.
 
 Para medir a infraestrutura antes do lote completo, comece com 1.000 empresas e 10 workers:
 
 ```powershell
-.\.venv\Scripts\python.exe main.py --input-csv csv_input/BASE_TOTAL_ESTABELECIMENTOS_RECEITA.csv --uf SP --output-csv prospeccao_sp_v2.csv --limit 1000 --workers 10 --progress-every 100
+.\.venv\Scripts\python.exe main.py --input-csv data/input/BASE_TOTAL_ESTABELECIMENTOS_RECEITA.csv --uf SP --output-csv data/output/prospeccao/prospeccao_sp_v2.csv --limit 1000 --workers 10 --progress-every 100
 ```
 
 Se os logs mostrarem muitos HTTP 429, reduza os workers. Quando o lote terminar, execute novamente sem `--limit`; o arquivo de saída será retomado e os 1.000 CNPJs já gravados serão ignorados.
@@ -148,8 +153,8 @@ Se os logs mostrarem muitos HTTP 429, reduza os workers. Quando o lote terminar,
 ### Definir saída ou outro estado
 
 ```powershell
-.\.venv\Scripts\python.exe main.py --input-csv csv_input/BASE_TOTAL_ESTABELECIMENTOS_RECEITA.csv --uf SP --output-csv contatos_sp_nova_busca.csv --limit 100
-.\.venv\Scripts\python.exe main.py --input-csv csv_input/BASE_TOTAL_ESTABELECIMENTOS_RECEITA.csv --uf RJ --limit 100
+.\.venv\Scripts\python.exe main.py --input-csv data/input/BASE_TOTAL_ESTABELECIMENTOS_RECEITA.csv --uf SP --output-csv data/output/prospeccao/contatos_sp_nova_busca.csv --limit 100
+.\.venv\Scripts\python.exe main.py --input-csv data/input/BASE_TOTAL_ESTABELECIMENTOS_RECEITA.csv --uf RJ --limit 100
 ```
 
 ### Consultar um CNPJ individual
@@ -163,7 +168,7 @@ Substitua o marcador pelo CNPJ desejado. Nesse modo, o resultado aparece no term
 ### Argumentos do lote
 
 - `--input-csv`: caminho do CSV de entrada.
-- `--output-csv`: caminho da saída; padrão `prospeccao_resultados_<uf>.csv`.
+- `--output-csv`: caminho da saída; padrão `data/output/prospeccao/prospeccao_<uf>.csv`.
 - `--uf`: sigla do estado; padrão `SP`.
 - `--limit`: quantidade de novos CNPJs elegíveis a processar. Use um inteiro positivo; omitido, processa todos os elegíveis ainda não registrados.
 - `--workers`: número de threads; padrão da CLI é `1`. Valores maiores permitem consultas simultâneas e aumentam a carga nas fontes externas.
@@ -203,7 +208,7 @@ Defina as variáveis antes de iniciar o processo:
 $env:ENRIQUECER_CONNECT_TIMEOUT = "5"
 $env:ENRIQUECER_READ_TIMEOUT = "15"
 $env:ENRIQUECER_ENABLE_RDAP = "0"
-.\.venv\Scripts\python.exe main.py --input-csv csv_input/BASE_TOTAL_ESTABELECIMENTOS_RECEITA.csv --limit 10
+.\.venv\Scripts\python.exe main.py --input-csv data/input/BASE_TOTAL_ESTABELECIMENTOS_RECEITA.csv --limit 10
 ```
 
 O `.env` é carregado antes da configuração da aplicação, portanto essas opções podem ser mantidas no arquivo.
@@ -215,12 +220,12 @@ As sessões HTTP são separadas por thread e não fazem retries automáticos. Re
 Depois da prospecção:
 
 ```powershell
-.\.venv\Scripts\python.exe validar_emails.py --input-csv prospeccao_resultados_sp.csv --output-csv emails_validados.csv --suppressions email_suppressions.csv --disposable-domains disposable_domains.txt --workers 4
+.\.venv\Scripts\python.exe validar_emails.py --input-csv data/output/prospeccao/prospeccao_sp.csv --workers 4
 ```
 
 O validador deduplica endereços, verifica sintaxe e registros MX e aplica as listas locais. Aguarda o marcador de escrita desaparecer e o arquivo ficar estável antes de criar um snapshot. Ele processa esse snapshot uma vez, sem acompanhar linhas posteriores.
 
-A validação não envia mensagens e não confirma a existência de uma caixa individual. Consulte [README_validacao_emails.md](README_validacao_emails.md) para os status de saída e detalhes das listas de supressão.
+A validação não envia mensagens e não confirma a existência de uma caixa individual. Consulte [docs/validacao_emails.md](docs/validacao_emails.md) para os status de saída e detalhes das listas de supressão.
 
 ## Testes
 
